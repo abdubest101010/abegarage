@@ -1,0 +1,348 @@
+Sure, let's integrate Make.com (formerly Integromat) into your to-do list application for handling notifications. We will detail each step, including setting up Make.com to handle task notifications and task completion checks.
+
+Step 1: Set Up Next.js Project
+Create Next.js App:
+
+bash
+Copy code
+npx create-next-app@latest todo-app
+cd todo-app
+Install Prisma and PostgreSQL Client:
+bash
+Copy code
+npm install @prisma/client
+npm install -D prisma
+npm install pg
+Step 2: Initialize Prisma
+Initialize Prisma:
+
+bash
+Copy code
+npx prisma init
+Configure Prisma with PostgreSQL:
+
+Update the DATABASE_URL in the .env file with your PostgreSQL connection string:
+makefile
+Copy code
+DATABASE_URL="postgresql://USER:PASSWORD@HOST:PORT/DATABASE"
+Step 3: Define Prisma Schema
+Update prisma/schema.prisma:
+
+prisma
+Copy code
+datasource db {
+  provider = "postgresql"
+  url      = env("DATABASE_URL")
+}
+
+generator client {
+  provider = "prisma-client-js"
+}
+
+model User {
+  id        Int      @id @default(autoincrement())
+  telegramId String  @unique
+  username  String?
+  tasks     Task[]
+}
+
+model Task {
+  id          Int      @id @default(autoincrement())
+  description String
+  time        DateTime
+  userId      Int
+  user        User     @relation(fields: [userId], references: [id])
+  status      String   @default("pending")
+}
+Run Prisma Migrate:
+
+bash
+Copy code
+npx prisma migrate dev --name init
+Step 4: Generate Prisma Client
+Generate Prisma Client:
+bash
+Copy code
+npx prisma generate
+Step 5: Implement Backend with Next.js API Routes
+Create lib/prisma.js to instantiate Prisma Client:
+
+javascript
+Copy code
+// lib/prisma.js
+import { PrismaClient } from '@prisma/client';
+
+const prisma = new PrismaClient();
+
+export default prisma;
+Create API Endpoint to Handle User and Task Creation (pages/api/createTask.js):
+
+javascript
+Copy code
+// pages/api/createTask.js
+import prisma from '../../lib/prisma';
+
+export default async function handler(req, res) {
+  if (req.method === 'POST') {
+    const { telegramId, username, description, time } = req.body;
+
+    let user = await prisma.user.findUnique({
+      where: { telegramId },
+    });
+
+    if (!user) {
+      user = await prisma.user.create({
+        data: {
+          telegramId,
+          username,
+        },
+      });
+    }
+
+    const task = await prisma.task.create({
+      data: {
+        description,
+        time: new Date(time),
+        userId: user.id,
+      },
+    });
+
+    // Trigger Make.com webhook to schedule notifications
+    await fetch('YOUR_MAKE_COM_WEBHOOK_URL', {
+      method: 'POST',
+      headers: {
+        'Content-Type': 'application/json',
+      },
+      body: JSON.stringify({
+        taskId: task.id,
+        telegramId,
+        description,
+        time,
+      }),
+    });
+
+    res.status(200).json(task);
+  } else {
+    res.status(405).end(); // Method Not Allowed
+  }
+}
+Create API Endpoint to Fetch Tasks (pages/api/tasks.js):
+
+javascript
+Copy code
+// pages/api/tasks.js
+import prisma from '../../lib/prisma';
+
+export default async function handler(req, res) {
+  if (req.method === 'GET') {
+    const tasks = await prisma.task.findMany({
+      include: { user: true },
+    });
+
+    res.status(200).json(tasks);
+  } else {
+    res.status(405).end(); // Method Not Allowed
+  }
+}
+Create API Endpoint to Complete Task (pages/api/completeTask.js):
+
+javascript
+Copy code
+// pages/api/completeTask.js
+import prisma from '../../lib/prisma';
+
+export default async function handler(req, res) {
+  if (req.method === 'POST') {
+    const { id } = req.body;
+
+    await prisma.task.update({
+      where: { id },
+      data: { status: 'completed' },
+    });
+
+    res.status(200).json({ message: 'Task completed' });
+  } else {
+    res.status(405).end(); // Method Not Allowed
+  }
+}
+Step 6: Integrate Telegram Bot for User Information
+Create Telegram Bot and Get API Token:
+
+Follow steps to create a bot and obtain the token from BotFather.
+Set Up Telegram API in Next.js (pages/api/telegram.js):
+
+javascript
+Copy code
+import { NextApiRequest, NextApiResponse } from 'next';
+import TelegramBot from 'node-telegram-bot-api';
+import prisma from '../../lib/prisma';
+
+const bot = new TelegramBot(process.env.TELEGRAM_API_TOKEN, { polling: true });
+
+bot.onText(/\/start/, async (msg) => {
+  const chatId = msg.chat.id;
+  const username = msg.from.username || msg.from.first_name;
+
+  let user = await prisma.user.findUnique({
+    where: { telegramId: chatId.toString() },
+  });
+
+  if (!user) {
+    user = await prisma.user.create({
+      data: {
+        telegramId: chatId.toString(),
+        username,
+      },
+    });
+  }
+
+  bot.sendMessage(chatId, `Hello ${username}, your Telegram ID is saved.`);
+});
+
+export default async function handler(req, res) {
+  res.status(200).json({ message: 'Telegram bot is running' });
+}
+Step 7: Create Frontend UI for To-Do List
+Create Components:
+
+TodoForm Component:
+
+jsx
+Copy code
+// components/TodoForm.js
+import { useState } from 'react';
+import axios from 'axios';
+
+const TodoForm = ({ telegramId }) => {
+  const [description, setDescription] = useState('');
+  const [time, setTime] = useState('');
+
+  const handleSubmit = async (e) => {
+    e.preventDefault();
+    if (description && time) {
+      await axios.post('/api/createTask', {
+        telegramId,
+        description,
+        time,
+      });
+      setDescription('');
+      setTime('');
+    }
+  };
+
+  return (
+    <form onSubmit={handleSubmit}>
+      <input
+        type="text"
+        placeholder="Task"
+        value={description}
+        onChange={(e) => setDescription(e.target.value)}
+      />
+      <input
+        type="datetime-local"
+        value={time}
+        onChange={(e) => setTime(e.target.value)}
+      />
+      <button type="submit">Add Task</button>
+    </form>
+  );
+};
+
+export default TodoForm;
+TodoList Component:
+
+jsx
+Copy code
+// components/TodoList.js
+const TodoList = ({ tasks, completeTask }) => {
+  return (
+    <ul>
+      {tasks.map((task, index) => (
+        <li key={index}>
+          {task.description} - {new Date(task.time).toLocaleString()}
+          <button onClick={() => completeTask(task.id)}>Complete</button>
+        </li>
+      ))}
+    </ul>
+  );
+};
+
+export default TodoList;
+Use Components in Main Page:
+
+Home Page:
+
+jsx
+Copy code
+// pages/index.js
+import { useState, useEffect } from 'react';
+import TodoForm from '../components/TodoForm';
+import TodoList from '../components/TodoList';
+import axios from 'axios';
+
+export default function Home() {
+  const [tasks, setTasks] = useState([]);
+  const [telegramId, setTelegramId] = useState('');
+
+  useEffect(() => {
+    const fetchTasks = async () => {
+      const response = await axios.get('/api/tasks');
+      setTasks(response.data);
+    };
+    fetchTasks();
+  }, []);
+
+  const completeTask = async (id) => {
+    await axios.post('/api/completeTask', { id });
+    setTasks(tasks.filter((task) => task.id !== id));
+  };
+
+  return (
+    <div>
+      <h1>To-Do List</h1>
+      <input
+        type="text"
+        placeholder="Enter your Telegram ID"
+        value={telegramId}
+        onChange={(e) => setTelegramId(e.target.value)}
+      />
+      <TodoForm telegramId={telegramId} />
+      <TodoList tasks={tasks} completeTask={completeTask} />
+    </div>
+  );
+}
+Step 8: Configure Make.com for Notifications and Task Management
+Create Scenarios in Make.com:
+
+Task Creation Scenario:
+
+Trigger: Webhook (task creation)
+Create a new scenario and select "Webhook" as the trigger.
+Copy the provided webhook URL and replace YOUR_MAKE_COM_WEBHOOK_URL in createTask.js with this URL.
+Actions:
+Store task details in your chosen data module (e.g., Google Sheets, Airtable).
+Use "Set Variable" module to store the task time.
+Use "Sleep" module to delay until the task time.
+Use "HTTP" module to send a notification to the user via Telegram (use Telegram Bot API).
+Task Reminder Scenario:
+
+Trigger: Webhook (task reminder)
+Create a new scenario and select "Webhook" as the trigger.
+Copy the provided webhook URL and use it in your logic to trigger reminders.
+Actions:
+Use "HTTP" module to send a notification to the user via Telegram (use Telegram Bot API).
+Wait for user response (can use Integromat's Telegram Bot module).
+Based on the response, either complete the task or reschedule it.
+Step 9: Testing and Verification
+Run Next.js App:
+
+bash
+Copy code
+npm run dev
+Test Task Addition and Notifications:
+
+Add tasks and verify they are stored in the database.
+Ensure notifications are sent at the correct times via Telegram.
+Confirm task completion handling and rescheduling if needed.
+Summary
+By following these detailed steps, you will be able to create a functional to-do list application with Next.js, Prisma, PostgreSQL, and Telegram integration for user information, using Make.com for handling notifications and task management. If you have any specific questions or need further details on any part, feel free to ask!
